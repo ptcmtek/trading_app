@@ -11,12 +11,12 @@ import yfinance as yf
 
 
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
-st.title("Trading Dashboard - Fase 1 + 2")
+st.title("Trading Dashboard - Phase 1 + 2")
 
 
 CONFIG_PATH = Path("config.json")
 if not CONFIG_PATH.exists():
-    st.error("Falta o ficheiro config.json na mesma pasta do app.py.")
+    st.error("Missing config.json in the same folder as app.py.")
     st.stop()
 
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -28,13 +28,67 @@ EMA_OPTIONS = CONFIG["ema_options"]
 DEFAULT_EMAS = CONFIG["default_emas"]
 
 
-# Ajusta estas chaves aos labels reais do teu config.json
-NEWS_QUERY_MAP = {
-    "SPX (^GSPC)": ["general", "forex", "crypto"],
-    "XAD6.DE": ["general"],
-    "Gold": ["forex"],
-    "Silver": ["forex"],
-    "Oil": ["general", "forex"],
+ASSET_NEWS_CONFIG = {
+    "SPX (^GSPC)": {
+        "categories": ["general"],
+        "keywords": [
+            "s&p 500", "sp500", "spx", "^gspc",
+            "wall street", "u.s. stocks", "us stocks",
+            "equities", "stock market", "index"
+        ],
+        "priority_keywords": [
+            "s&p 500", "spx", "^gspc"
+        ],
+        "exclude_keywords": [
+            "crypto", "bitcoin"
+        ],
+    },
+    "XAD6.DE": {
+        "categories": ["general"],
+        "keywords": [
+            "dax", "german stocks", "germany market",
+            "frankfurt", "european equities", "euro stocks"
+        ],
+        "priority_keywords": [
+            "dax", "german stocks", "frankfurt"
+        ],
+        "exclude_keywords": [
+            "crypto"
+        ],
+    },
+    "Gold": {
+        "categories": ["forex", "general"],
+        "keywords": [
+            "gold", "bullion", "xauusd", "precious metals",
+            "safe haven", "spot gold"
+        ],
+        "priority_keywords": [
+            "gold", "xauusd", "spot gold", "bullion"
+        ],
+        "exclude_keywords": [],
+    },
+    "Silver": {
+        "categories": ["forex", "general"],
+        "keywords": [
+            "silver", "xagusd", "bullion", "precious metals",
+            "spot silver"
+        ],
+        "priority_keywords": [
+            "silver", "xagusd", "spot silver"
+        ],
+        "exclude_keywords": [],
+    },
+    "Oil": {
+        "categories": ["general", "forex"],
+        "keywords": [
+            "oil", "crude", "brent", "wti", "opec",
+            "barrel", "energy market"
+        ],
+        "priority_keywords": [
+            "oil", "crude", "brent", "wti"
+        ],
+        "exclude_keywords": [],
+    },
 }
 
 
@@ -84,7 +138,7 @@ def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
             break
 
     if datetime_col is None:
-        raise ValueError(f"Não foi encontrada coluna de data. Colunas: {list(df.columns)}")
+        raise ValueError(f"Date column not found. Columns: {list(df.columns)}")
 
     if "Close" not in df.columns and "Adj Close" in df.columns:
         df["Close"] = df["Adj Close"]
@@ -103,9 +157,7 @@ def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     required = ["datetime", "open", "high", "low", "close"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(
-            f"Faltam colunas obrigatórias: {missing}. Colunas disponíveis: {list(df.columns)}"
-        )
+        raise ValueError(f"Missing required columns: {missing}. Available: {list(df.columns)}")
 
     if "volume" not in df.columns:
         df["volume"] = 0
@@ -167,7 +219,7 @@ def download_data(symbol: str, timeframe: str) -> pd.DataFrame:
 
         return df_4h
 
-    raise ValueError("Timeframe inválido. Usa '4h' ou '1d'.")
+    raise ValueError("Invalid timeframe. Use '4h' or '1d'.")
 
 
 def add_indicators(df: pd.DataFrame, emas: list[int]) -> pd.DataFrame:
@@ -273,7 +325,7 @@ def build_chart(df: pd.DataFrame, label: str, emas: list[int]) -> go.Figure:
             high=df["high"],
             low=df["low"],
             close=df["close"],
-            name="Preço",
+            name="Price",
         ),
         row=1,
         col=1,
@@ -370,14 +422,43 @@ def classify_theme_from_text(text: str) -> str:
     return "Macro"
 
 
+def score_news_relevance(label: str, title: str, summary: str) -> int:
+    cfg = ASSET_NEWS_CONFIG.get(label, {})
+    keywords = [k.lower() for k in cfg.get("keywords", [])]
+    priority_keywords = [k.lower() for k in cfg.get("priority_keywords", [])]
+    exclude_keywords = [k.lower() for k in cfg.get("exclude_keywords", [])]
+
+    text = f"{title} {summary}".lower()
+    score = 0
+
+    for kw in keywords:
+        if kw in text:
+            score += 2
+
+    for kw in priority_keywords:
+        if kw in text:
+            score += 5
+
+    for kw in exclude_keywords:
+        if kw in text:
+            score -= 4
+
+    macro_terms = ["fed", "ecb", "rates", "inflation", "yield", "earnings", "tariff", "recession"]
+    for kw in macro_terms:
+        if kw in text:
+            score += 1
+
+    return score
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
     api_key = st.secrets.get("FINNHUB_API_KEY", "").strip()
     if not api_key:
         return [{
-            "headline": "FINNHUB_API_KEY não configurada em st.secrets",
+            "headline": "FINNHUB_API_KEY is not configured in st.secrets",
             "summary": "",
-            "source": "Sistema",
+            "source": "System",
             "url": "",
             "datetime": None,
         }]
@@ -396,9 +477,9 @@ def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
         if resp.status_code != 200:
             msg = payload.get("error", f"HTTP {resp.status_code}")
             return [{
-                "headline": f"Erro Finnhub: {msg}",
+                "headline": f"Finnhub error: {msg}",
                 "summary": "",
-                "source": "Sistema",
+                "source": "System",
                 "url": "",
                 "datetime": None,
             }]
@@ -416,7 +497,7 @@ def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
                 continue
 
             results.append({
-                "headline": item.get("headline", "Sem título"),
+                "headline": item.get("headline", "No title"),
                 "summary": item.get("summary", ""),
                 "source": item.get("source", ""),
                 "url": item.get("url", ""),
@@ -427,9 +508,9 @@ def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
 
     except Exception as e:
         return [{
-            "headline": f"Erro ao obter notícias: {e}",
+            "headline": f"Error fetching news: {e}",
             "summary": "",
-            "source": "Sistema",
+            "source": "System",
             "url": "",
             "datetime": None,
         }]
@@ -437,9 +518,10 @@ def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
-    categories = NEWS_QUERY_MAP.get(label, ["general"])
+    cfg = ASSET_NEWS_CONFIG.get(label, {"categories": ["general"]})
+    categories = cfg.get("categories", ["general"])
 
-    from_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from_date = (datetime.now(timezone.utc) - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     merged = []
     seen = set()
@@ -457,29 +539,41 @@ def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
 
             seen.add(key)
 
+            relevance = score_news_relevance(label, headline, summary)
+            if relevance < 2:
+                continue
+
             text = f"{headline} {summary}".lower()
             sentiment = classify_sentiment_from_text(text)
             theme = classify_theme_from_text(text)
 
             merged.append({
                 "title": headline,
+                "summary": summary,
                 "sentiment": sentiment,
                 "theme": theme,
                 "source": item.get("source", ""),
                 "url": item.get("url", ""),
                 "publishedAt": item.get("datetime").isoformat() if item.get("datetime") else "",
+                "relevance": relevance,
             })
 
-    merged = sorted(merged, key=lambda x: x.get("publishedAt", ""), reverse=True)
+    merged = sorted(
+        merged,
+        key=lambda x: (x.get("relevance", 0), x.get("publishedAt", "")),
+        reverse=True
+    )
 
     if not merged:
         return [{
-            "title": f"Sem notícias encontradas para {label}",
+            "title": f"No highly relevant news found for {label}",
+            "summary": "",
             "sentiment": "Neutral",
-            "theme": "Sem resultados",
-            "source": "Sistema",
+            "theme": "No results",
+            "source": "System",
             "url": "",
             "publishedAt": "",
+            "relevance": 0,
         }]
 
     return merged[:page_size]
@@ -489,8 +583,8 @@ def summarize_market_context(news_list):
     if not news_list:
         return {
             "sentiment": "Neutral",
-            "themes": "Sem dados",
-            "comment": "Sem notícias disponíveis.",
+            "themes": "No data",
+            "comment": "No news available."
         }
 
     bearish = sum(1 for n in news_list if n["sentiment"] == "Bearish")
@@ -504,24 +598,106 @@ def summarize_market_context(news_list):
         sentiment = "Neutral"
 
     themes = sorted(set(n["theme"] for n in news_list if n.get("theme")))
-    themes_text = ", ".join(themes) if themes else "Sem temas"
+    themes_text = ", ".join(themes) if themes else "No themes"
 
     if sentiment == "Bearish":
-        comment = "Fluxo noticioso com viés negativo para este ativo."
+        comment = "News flow currently leans negative for this asset."
     elif sentiment == "Bullish":
-        comment = "Fluxo noticioso com viés positivo para este ativo."
+        comment = "News flow currently leans positive for this asset."
     else:
-        comment = "Fluxo noticioso misto, sem direção clara."
+        comment = "News flow is mixed, with no clear directional bias."
 
     return {
         "sentiment": sentiment,
         "themes": themes_text,
-        "comment": comment,
+        "comment": comment
     }
 
 
+def get_lookback_bars(timeframe: str) -> int:
+    if timeframe == "1d":
+        return 14
+    return 14 * 6  # approx 6 four-hour candles per day
+
+
+def build_technical_analysis(df: pd.DataFrame, label: str, timeframe: str) -> str:
+    if df.empty:
+        return "No technical data available."
+
+    lookback = get_lookback_bars(timeframe)
+    recent = df.tail(lookback).copy()
+    if len(recent) < 5:
+        return "Not enough recent candles to build a technical view."
+
+    first_close = recent["close"].iloc[0]
+    last_close = recent["close"].iloc[-1]
+    change_pct = ((last_close / first_close) - 1) * 100 if first_close else 0
+
+    recent_high = recent["high"].max()
+    recent_low = recent["low"].min()
+    last = recent.iloc[-1]
+
+    trend = "sideways"
+    if "ema_20" in recent.columns and "ema_50" in recent.columns:
+        ema20 = recent["ema_20"].iloc[-1]
+        ema50 = recent["ema_50"].iloc[-1]
+        if pd.notna(ema20) and pd.notna(ema50):
+            if last_close > ema20 > ema50:
+                trend = "bullish"
+            elif last_close < ema20 < ema50:
+                trend = "bearish"
+
+    momentum_text = "neutral momentum"
+    if "rsi" in recent.columns and pd.notna(recent["rsi"].iloc[-1]):
+        rsi = recent["rsi"].iloc[-1]
+        if rsi > 70:
+            momentum_text = f"overbought momentum (RSI {rsi:.1f})"
+        elif rsi < 30:
+            momentum_text = f"oversold momentum (RSI {rsi:.1f})"
+        elif rsi >= 55:
+            momentum_text = f"positive momentum (RSI {rsi:.1f})"
+        elif rsi <= 45:
+            momentum_text = f"weak momentum (RSI {rsi:.1f})"
+        else:
+            momentum_text = f"balanced momentum (RSI {rsi:.1f})"
+
+    range_position = ""
+    if recent_high > recent_low:
+        pos = (last_close - recent_low) / (recent_high - recent_low)
+        if pos >= 0.8:
+            range_position = "Price is trading near the top of its 2-week range."
+        elif pos <= 0.2:
+            range_position = "Price is trading near the bottom of its 2-week range."
+        else:
+            range_position = "Price is trading near the middle of its 2-week range."
+
+    breakout_text = ""
+    if len(recent) >= 6:
+        prev = recent.iloc[:-1]
+        prev_high = prev["high"].max()
+        prev_low = prev["low"].min()
+        if last_close > prev_high:
+            breakout_text = "A short-term breakout is in play."
+        elif last_close < prev_low:
+            breakout_text = "A short-term breakdown is in play."
+        else:
+            breakout_text = "No confirmed short-term breakout yet."
+
+    direction_sentence = (
+        f"Over the last 2 weeks, {label} moved {change_pct:+.2f}% and the structure is currently {trend}."
+    )
+
+    return " ".join([
+        direction_sentence,
+        f"Recent range: {recent_low:.2f} to {recent_high:.2f}.",
+        f"Current read: {momentum_text}.",
+        range_position,
+        breakout_text,
+    ]).strip()
+
+
 def render_news_section(selected_labels):
-    st.subheader("Contexto de Mercado (News)")
+    st.subheader("Market Context (News)")
 
     for label in selected_labels:
         news = fetch_news_for_label(label)
@@ -530,37 +706,44 @@ def render_news_section(selected_labels):
         st.markdown(f"### {label}")
 
         c1, c2 = st.columns(2)
-        c1.metric("Sentimento", context["sentiment"])
-        c2.metric("Temas", context["themes"])
+        c1.metric("Sentiment", context["sentiment"])
+        c2.metric("Themes", context["themes"])
 
-        st.markdown(f"**Leitura:** {context['comment']}")
+        st.markdown(f"**Read:** {context['comment']}")
 
-        with st.expander(f"Ver notícias de {label}"):
+        with st.expander(f"View news for {label}"):
             if not news:
-                st.write("Sem notícias.")
+                st.write("No news available.")
             else:
                 for n in news:
-                    title = n.get("title", "Sem título")
+                    title = n.get("title", "No title")
+                    summary = n.get("summary", "")
                     source = n.get("source", "")
                     published = n.get("publishedAt", "")
                     url = n.get("url", "")
                     sentiment = n.get("sentiment", "Neutral")
+                    relevance = n.get("relevance", 0)
 
-                    meta = " | ".join(x for x in [source, published, sentiment] if x)
+                    meta = " | ".join(
+                        x for x in [source, published, sentiment, f"Score {relevance}"] if x
+                    )
 
                     if url:
-                        st.markdown(f"- [{title}]({url})")
+                        st.markdown(f"**[{title}]({url})**")
                     else:
-                        st.markdown(f"- {title}")
+                        st.markdown(f"**{title}**")
+
+                    if summary:
+                        st.write(summary)
 
                     if meta:
                         st.caption(meta)
 
 
-st.sidebar.header("Configuração")
+st.sidebar.header("Settings")
 
 selected = st.sidebar.multiselect(
-    "Ativos",
+    "Assets",
     list(SYMBOLS.keys()),
     default=DEFAULT_SELECTED,
 )
@@ -568,7 +751,7 @@ selected = st.sidebar.multiselect(
 timeframe = st.sidebar.selectbox("Timeframe", ["4h", "1d"], index=0)
 
 bars = st.sidebar.slider(
-    "Nº de candles",
+    "Number of candles",
     min_value=50,
     max_value=800,
     value=250,
@@ -582,13 +765,13 @@ emas = st.sidebar.multiselect(
 )
 
 if not selected:
-    st.warning("Escolhe pelo menos um ativo.")
+    st.warning("Select at least one asset.")
     st.stop()
 
 render_news_section(selected)
 
 data_map = {}
-summary_rows = []
+summary_rows = {}
 
 for label in selected:
     symbol = SYMBOLS[label]
@@ -597,7 +780,7 @@ for label in selected:
         df = download_data(symbol, timeframe)
 
         if df.empty:
-            st.warning(f"Sem dados para {label}.")
+            st.warning(f"No data for {label}.")
             continue
 
         df = df.tail(bars).reset_index(drop=True)
@@ -606,32 +789,36 @@ for label in selected:
         data_map[label] = df
         sig = compute_signals(df)
 
-        summary_rows.append(
-            {
-                "Ativo": label,
-                "Close": sig["close"],
-                "RSI": sig["rsi"],
-                "Trend": sig["trend"],
-                "Setup": sig["setup"],
-                "Estado": sig["state"],
-                "Flag": sig["emoji"],
-            }
-        )
+        summary_rows[label] = {
+            "Asset": label,
+            "Close": sig["close"],
+            "RSI": sig["rsi"],
+            "Trend": sig["trend"],
+            "Setup": sig["setup"],
+            "State": sig["state"],
+            "Flag": sig["emoji"],
+        }
 
     except Exception as e:
-        st.error(f"Erro em {label}: {e}")
+        st.error(f"Error in {label}: {e}")
 
-st.subheader("Resumo")
+st.subheader("Summary")
 if summary_rows:
-    summary_df = pd.DataFrame(summary_rows)
+    summary_df = pd.DataFrame(list(summary_rows.values()))
     st.dataframe(summary_df, use_container_width=True)
 else:
-    st.info("Sem dados para mostrar.")
+    st.info("No data to display.")
 
 for label in selected:
     if label not in data_map:
         continue
 
+    df = data_map[label]
+
     st.subheader(label)
-    fig = build_chart(data_map[label], label, emas)
+    technical_text = build_technical_analysis(df, label, timeframe)
+    st.markdown("**Technical analysis**")
+    st.write(technical_text)
+
+    fig = build_chart(df, label, emas)
     st.plotly_chart(fig, use_container_width=True)
