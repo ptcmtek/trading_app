@@ -346,17 +346,39 @@ def build_chart(df: pd.DataFrame, label: str, emas: list[int]) -> go.Figure:
             )
 
     fig.add_trace(
-        go.Scatter(x=df["datetime"], y=df["bb_upper"], mode="lines", name="BB Upper"),
+        go.Scatter(
+            x=df["datetime"],
+            y=df["bb_upper"],
+            mode="lines",
+            name="BB Upper",
+            line=dict(width=1),
+        ),
         row=1,
         col=1,
     )
+
     fig.add_trace(
-        go.Scatter(x=df["datetime"], y=df["bb_mid"], mode="lines", name="BB Mid"),
+        go.Scatter(
+            x=df["datetime"],
+            y=df["bb_lower"],
+            mode="lines",
+            name="BB Lower",
+            line=dict(width=1),
+            fill="tonexty",
+            fillcolor="rgba(100, 149, 237, 0.12)",
+        ),
         row=1,
         col=1,
     )
+
     fig.add_trace(
-        go.Scatter(x=df["datetime"], y=df["bb_lower"], mode="lines", name="BB Lower"),
+        go.Scatter(
+            x=df["datetime"],
+            y=df["bb_mid"],
+            mode="lines",
+            name="BB Mid",
+            line=dict(width=1, dash="dot"),
+        ),
         row=1,
         col=1,
     )
@@ -617,7 +639,7 @@ def summarize_market_context(news_list):
 def get_lookback_bars(timeframe: str) -> int:
     if timeframe == "1d":
         return 14
-    return 14 * 6  # approx 6 four-hour candles per day
+    return 14 * 6
 
 
 def build_technical_analysis(df: pd.DataFrame, label: str, timeframe: str) -> str:
@@ -635,7 +657,6 @@ def build_technical_analysis(df: pd.DataFrame, label: str, timeframe: str) -> st
 
     recent_high = recent["high"].max()
     recent_low = recent["low"].min()
-    last = recent.iloc[-1]
 
     trend = "sideways"
     if "ema_20" in recent.columns and "ema_50" in recent.columns:
@@ -754,7 +775,7 @@ bars = st.sidebar.slider(
     "Number of candles",
     min_value=50,
     max_value=800,
-    value=100,
+    value=250,
     step=50,
 )
 
