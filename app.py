@@ -754,7 +754,7 @@ bars = st.sidebar.slider(
     "Number of candles",
     min_value=50,
     max_value=800,
-    value=250,
+    value=100,
     step=50,
 )
 
