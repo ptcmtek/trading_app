@@ -14,10 +14,6 @@ st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard - Fase 1 + 2")
 
 
-st.write("Tem key?", "NEWSAPI_KEY" in st.secrets)
-if "NEWSAPI_KEY" in st.secrets:
-    st.write("Primeiros 5 chars:", st.secrets["NEWSAPI_KEY"][:5])
-
 CONFIG_PATH = Path("config.json")
 if not CONFIG_PATH.exists():
     st.error("Falta o ficheiro config.json na mesma pasta do app.py.")
@@ -32,17 +28,13 @@ EMA_OPTIONS = CONFIG["ema_options"]
 DEFAULT_EMAS = CONFIG["default_emas"]
 
 
+# Ajusta estas chaves aos labels reais do teu config.json
 NEWS_QUERY_MAP = {
-    "S&P 500": '"S&P 500" OR SPX OR "US stocks"',
-    "Nasdaq 100": '"Nasdaq 100" OR NDX OR Nasdaq OR "US tech stocks"',
-    "Dow Jones": '"Dow Jones" OR DJI OR "US industrials"',
-    "Russell 2000": '"Russell 2000" OR RUT OR "small cap stocks"',
-    "Gold": 'gold OR bullion OR "spot gold" OR XAUUSD',
-    "Silver": 'silver OR bullion OR XAGUSD',
-    "Oil": 'oil OR crude OR Brent OR WTI',
-    "DAX": 'DAX OR "German stocks"',
-    "FTSE 100": '"FTSE 100" OR "UK stocks"',
-    "Euro Stoxx 50": '"Euro Stoxx 50" OR "euro area stocks"',
+    "SPX (^GSPC)": ["general", "forex", "crypto"],
+    "XAD6.DE": ["general"],
+    "Gold": ["forex"],
+    "Silver": ["forex"],
+    "Oil": ["general", "forex"],
 }
 
 
@@ -346,12 +338,12 @@ def classify_sentiment_from_text(text: str) -> str:
     bullish_terms = [
         "rally", "surge", "gain", "gains", "higher", "beats", "beat",
         "strong", "bullish", "optimism", "record high", "upside", "growth",
-        "rebound", "advance", "advances"
+        "rebound", "advance", "advances",
     ]
     bearish_terms = [
         "selloff", "drop", "falls", "fall", "lower", "miss", "misses",
         "weak", "bearish", "inflation", "recession", "war", "risk", "crisis",
-        "tariff", "volatility", "concern", "slump", "decline"
+        "tariff", "volatility", "concern", "slump", "decline",
     ]
 
     bull_score = sum(1 for w in bullish_terms if w in text)
@@ -379,86 +371,118 @@ def classify_theme_from_text(text: str) -> str:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
-    api_key = st.secrets.get("NEWSAPI_KEY")
+def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
+    api_key = st.secrets.get("FINNHUB_API_KEY", "").strip()
     if not api_key:
         return [{
-            "title": "NEWSAPI_KEY não configurada em st.secrets",
-            "sentiment": "Neutral",
-            "theme": "Configuração",
+            "headline": "FINNHUB_API_KEY não configurada em st.secrets",
+            "summary": "",
             "source": "Sistema",
             "url": "",
-            "publishedAt": "",
+            "datetime": None,
         }]
 
-    query = NEWS_QUERY_MAP.get(label, label)
-    from_date = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    url = "https://newsapi.org/v2/everything"
+    url = "https://finnhub.io/api/v1/news"
     params = {
-        "q": query,
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": page_size,
-        "from": from_date,
+        "category": category,
+        "minId": 0,
+        "token": api_key,
     }
-    headers = {"X-Api-Key": api_key}
 
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=20)
-        resp.raise_for_status()
+        resp = requests.get(url, params=params, timeout=20)
         payload = resp.json()
 
-        articles = payload.get("articles", [])
+        if resp.status_code != 200:
+            msg = payload.get("error", f"HTTP {resp.status_code}")
+            return [{
+                "headline": f"Erro Finnhub: {msg}",
+                "summary": "",
+                "source": "Sistema",
+                "url": "",
+                "datetime": None,
+            }]
+
         results = []
+        cutoff = datetime.fromisoformat(min_date.replace("Z", "+00:00"))
 
-        for a in articles:
-            title = a.get("title") or "Sem título"
-            description = a.get("description") or ""
-            source = (a.get("source") or {}).get("name", "")
-            published_at = a.get("publishedAt", "")
-            article_url = a.get("url", "")
+        for item in payload:
+            ts = item.get("datetime")
+            dt = None
+            if ts:
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
 
-            text = f"{title} {description}".lower()
-            sentiment = classify_sentiment_from_text(text)
-            theme = classify_theme_from_text(text)
+            if dt and dt < cutoff:
+                continue
 
             results.append({
-                "title": title,
-                "sentiment": sentiment,
-                "theme": theme,
-                "source": source,
-                "url": article_url,
-                "publishedAt": published_at,
+                "headline": item.get("headline", "Sem título"),
+                "summary": item.get("summary", ""),
+                "source": item.get("source", ""),
+                "url": item.get("url", ""),
+                "datetime": dt,
             })
 
         return results
 
-    except requests.HTTPError as e:
-        try:
-            err = resp.json()
-            msg = err.get("message", str(e))
-        except Exception:
-            msg = str(e)
-
-        return [{
-            "title": f"Erro News API: {msg}",
-            "sentiment": "Neutral",
-            "theme": "Erro API",
-            "source": "Sistema",
-            "url": "",
-            "publishedAt": "",
-        }]
-
     except Exception as e:
         return [{
-            "title": f"Erro ao obter notícias: {e}",
+            "headline": f"Erro ao obter notícias: {e}",
+            "summary": "",
+            "source": "Sistema",
+            "url": "",
+            "datetime": None,
+        }]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
+    categories = NEWS_QUERY_MAP.get(label, ["general"])
+
+    from_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    merged = []
+    seen = set()
+
+    for category in categories:
+        items = fetch_finnhub_news(category, from_date)
+
+        for item in items:
+            headline = item.get("headline", "")
+            summary = item.get("summary", "")
+            key = (headline, item.get("url", ""))
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            text = f"{headline} {summary}".lower()
+            sentiment = classify_sentiment_from_text(text)
+            theme = classify_theme_from_text(text)
+
+            merged.append({
+                "title": headline,
+                "sentiment": sentiment,
+                "theme": theme,
+                "source": item.get("source", ""),
+                "url": item.get("url", ""),
+                "publishedAt": item.get("datetime").isoformat() if item.get("datetime") else "",
+            })
+
+    merged = sorted(merged, key=lambda x: x.get("publishedAt", ""), reverse=True)
+
+    if not merged:
+        return [{
+            "title": f"Sem notícias encontradas para {label}",
             "sentiment": "Neutral",
-            "theme": "Erro",
+            "theme": "Sem resultados",
             "source": "Sistema",
             "url": "",
             "publishedAt": "",
         }]
+
+    return merged[:page_size]
 
 
 def summarize_market_context(news_list):
@@ -466,7 +490,7 @@ def summarize_market_context(news_list):
         return {
             "sentiment": "Neutral",
             "themes": "Sem dados",
-            "comment": "Sem notícias disponíveis."
+            "comment": "Sem notícias disponíveis.",
         }
 
     bearish = sum(1 for n in news_list if n["sentiment"] == "Bearish")
@@ -492,7 +516,7 @@ def summarize_market_context(news_list):
     return {
         "sentiment": sentiment,
         "themes": themes_text,
-        "comment": comment
+        "comment": comment,
     }
 
 
