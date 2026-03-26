@@ -1,0 +1,22 @@
+{
+  "symbols": {
+    "SPX (^GSPC)": "^GSPC",
+    "SPX Futures (ES=F)": "ES=F",
+    "XAD6.DE": "XAD6.DE",
+
+    "Gold ETC (4GLD.DE)": "4GLD.DE",
+    "Silver ETC (XAD5.DE)": "XAD5.DE",
+
+    "Gold Futures (GC=F)": "GC=F"
+  },
+  "default_selected": [
+    "SPX (^GSPC)",
+   
+    "XAD6.DE",
+    "Gold ETC (4GLD.DE)",
+    "Silver ETC (XAD5.DE)"
+
+  ],
+  "ema_options": [9, 20, 50, 100, 200],
+  "default_emas": [20, 50, 200]
+}
