@@ -1,15 +1,18 @@
 import json
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 import streamlit as st
 import yfinance as yf
 
 
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard - Fase 1 + 2")
+
 
 CONFIG_PATH = Path("config.json")
 if not CONFIG_PATH.exists():
@@ -25,17 +28,44 @@ EMA_OPTIONS = CONFIG["ema_options"]
 DEFAULT_EMAS = CONFIG["default_emas"]
 
 
+NEWS_QUERY_MAP = {
+    "S&P 500": '"S&P 500" OR SPX OR "US stocks"',
+    "Nasdaq 100": '"Nasdaq 100" OR NDX OR Nasdaq OR "US tech stocks"',
+    "Dow Jones": '"Dow Jones" OR DJI OR "US industrials"',
+    "Russell 2000": '"Russell 2000" OR RUT OR "small cap stocks"',
+    "Gold": 'gold OR bullion OR "spot gold" OR XAUUSD',
+    "Silver": 'silver OR bullion OR XAGUSD',
+    "Oil": 'oil OR crude OR Brent OR WTI',
+    "DAX": 'DAX OR "German stocks"',
+    "FTSE 100": '"FTSE 100" OR "UK stocks"',
+    "Euro Stoxx 50": '"Euro Stoxx 50" OR "euro area stocks"',
+}
+
+
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
     if isinstance(df.columns, pd.MultiIndex):
         flat_cols = []
-        for col in df.columns:
+
+        for col in df.columns.to_flat_index():
             if isinstance(col, tuple):
-                flat_cols.append(str(col[0]))
+                parts = [str(x) for x in col if x is not None]
+                matched = None
+
+                for candidate in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+                    if candidate in parts:
+                        matched = candidate
+                        break
+
+                flat_cols.append(matched if matched else "_".join(parts))
             else:
                 flat_cols.append(str(col))
+
         df.columns = flat_cols
     else:
         df.columns = [str(c) for c in df.columns]
+
     return df
 
 
@@ -60,6 +90,9 @@ def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     if datetime_col is None:
         raise ValueError(f"Não foi encontrada coluna de data. Colunas: {list(df.columns)}")
 
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
+
     df = df.rename(
         columns={
             datetime_col: "datetime",
@@ -74,7 +107,9 @@ def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     required = ["datetime", "open", "high", "low", "close"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"Faltam colunas obrigatórias: {missing}. Colunas: {list(df.columns)}")
+        raise ValueError(
+            f"Faltam colunas obrigatórias: {missing}. Colunas disponíveis: {list(df.columns)}"
+        )
 
     if "volume" not in df.columns:
         df["volume"] = 0
@@ -95,7 +130,7 @@ def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 def download_data(symbol: str, timeframe: str) -> pd.DataFrame:
     if timeframe == "1d":
         raw = yf.download(
-            symbol,
+            tickers=symbol,
             period="5y",
             interval="1d",
             auto_adjust=False,
@@ -106,7 +141,7 @@ def download_data(symbol: str, timeframe: str) -> pd.DataFrame:
 
     if timeframe == "4h":
         raw = yf.download(
-            symbol,
+            tickers=symbol,
             period="60d",
             interval="1h",
             auto_adjust=False,
@@ -121,7 +156,7 @@ def download_data(symbol: str, timeframe: str) -> pd.DataFrame:
 
         df = df.set_index("datetime")
 
-        df_4h = df.resample("4h").agg(
+        df_4h = df.resample("4h", label="right", closed="right").agg(
             {
                 "open": "first",
                 "high": "max",
@@ -133,6 +168,7 @@ def download_data(symbol: str, timeframe: str) -> pd.DataFrame:
 
         df_4h = df_4h.dropna(subset=["open", "high", "low", "close"]).reset_index()
         df_4h = df_4h.sort_values("datetime").reset_index(drop=True)
+
         return df_4h
 
     raise ValueError("Timeframe inválido. Usa '4h' ou '1d'.")
@@ -164,14 +200,25 @@ def add_indicators(df: pd.DataFrame, emas: list[int]) -> pd.DataFrame:
 
 
 def compute_signals(df: pd.DataFrame) -> dict:
+    if df.empty:
+        return {
+            "close": None,
+            "rsi": None,
+            "trend": "Neutral",
+            "setup": "None",
+            "state": "",
+            "emoji": "⚠️",
+        }
+
     last = df.iloc[-1]
 
     trend = "Neutral"
     if "ema_20" in df.columns and "ema_50" in df.columns:
-        if last["close"] < last["ema_20"] < last["ema_50"]:
-            trend = "Bearish"
-        elif last["close"] > last["ema_20"] > last["ema_50"]:
-            trend = "Bullish"
+        if pd.notna(last["ema_20"]) and pd.notna(last["ema_50"]):
+            if last["close"] < last["ema_20"] < last["ema_50"]:
+                trend = "Bearish"
+            elif last["close"] > last["ema_20"] > last["ema_50"]:
+                trend = "Bullish"
 
     rsi_state = ""
     if pd.notna(last["rsi"]):
@@ -182,24 +229,22 @@ def compute_signals(df: pd.DataFrame) -> dict:
 
     setup = "None"
 
-    if "ema_20" in df.columns and pd.notna(last["ema_20"]):
+    if "ema_20" in df.columns and pd.notna(last.get("ema_20", None)):
         distance_to_ema20 = abs(last["close"] - last["ema_20"]) / last["close"]
 
         if trend == "Bearish" and distance_to_ema20 < 0.01:
             setup = "Pullback Short"
-
-        if trend == "Bullish" and distance_to_ema20 < 0.01:
+        elif trend == "Bullish" and distance_to_ema20 < 0.01:
             setup = "Pullback Long"
 
-    prev_20 = df.tail(21).iloc[:-1]
-    if not prev_20.empty:
+    if len(df) >= 21:
+        prev_20 = df.tail(21).iloc[:-1]
         recent_low = prev_20["low"].min()
         recent_high = prev_20["high"].max()
 
         if last["close"] < recent_low:
             setup = "Breakdown"
-
-        if last["close"] > recent_high:
+        elif last["close"] > recent_high:
             setup = "Breakout"
 
     emoji = "✅"
@@ -293,6 +338,197 @@ def build_chart(df: pd.DataFrame, label: str, emas: list[int]) -> go.Figure:
     return fig
 
 
+def classify_sentiment_from_text(text: str) -> str:
+    bullish_terms = [
+        "rally", "surge", "gain", "gains", "higher", "beats", "beat",
+        "strong", "bullish", "optimism", "record high", "upside", "growth",
+        "rebound", "advance", "advances"
+    ]
+    bearish_terms = [
+        "selloff", "drop", "falls", "fall", "lower", "miss", "misses",
+        "weak", "bearish", "inflation", "recession", "war", "risk", "crisis",
+        "tariff", "volatility", "concern", "slump", "decline"
+    ]
+
+    bull_score = sum(1 for w in bullish_terms if w in text)
+    bear_score = sum(1 for w in bearish_terms if w in text)
+
+    if bull_score > bear_score:
+        return "Bullish"
+    if bear_score > bull_score:
+        return "Bearish"
+    return "Neutral"
+
+
+def classify_theme_from_text(text: str) -> str:
+    if any(w in text for w in ["inflation", "cpi", "ppi", "rates", "yield", "fed", "ecb", "interest rate"]):
+        return "Rates / Inflation"
+    if any(w in text for w in ["earnings", "revenue", "guidance", "results", "quarter", "profit"]):
+        return "Earnings"
+    if any(w in text for w in ["oil", "crude", "brent", "wti", "gas", "energy"]):
+        return "Energy"
+    if any(w in text for w in ["war", "tariff", "sanctions", "geopolitical", "middle east", "iran", "china"]):
+        return "Geopolitics"
+    if any(w in text for w in ["ai", "chip", "semiconductor", "tech", "nvidia", "microsoft", "apple"]):
+        return "Technology"
+    return "Macro"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
+    api_key = st.secrets.get("NEWSAPI_KEY")
+    if not api_key:
+        return [{
+            "title": "NEWSAPI_KEY não configurada em st.secrets",
+            "sentiment": "Neutral",
+            "theme": "Configuração",
+            "source": "Sistema",
+            "url": "",
+            "publishedAt": "",
+        }]
+
+    query = NEWS_QUERY_MAP.get(label, label)
+    from_date = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": query,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": page_size,
+        "from": from_date,
+    }
+    headers = {"X-Api-Key": api_key}
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        articles = payload.get("articles", [])
+        results = []
+
+        for a in articles:
+            title = a.get("title") or "Sem título"
+            description = a.get("description") or ""
+            source = (a.get("source") or {}).get("name", "")
+            published_at = a.get("publishedAt", "")
+            article_url = a.get("url", "")
+
+            text = f"{title} {description}".lower()
+            sentiment = classify_sentiment_from_text(text)
+            theme = classify_theme_from_text(text)
+
+            results.append({
+                "title": title,
+                "sentiment": sentiment,
+                "theme": theme,
+                "source": source,
+                "url": article_url,
+                "publishedAt": published_at,
+            })
+
+        return results
+
+    except requests.HTTPError as e:
+        try:
+            err = resp.json()
+            msg = err.get("message", str(e))
+        except Exception:
+            msg = str(e)
+
+        return [{
+            "title": f"Erro News API: {msg}",
+            "sentiment": "Neutral",
+            "theme": "Erro API",
+            "source": "Sistema",
+            "url": "",
+            "publishedAt": "",
+        }]
+
+    except Exception as e:
+        return [{
+            "title": f"Erro ao obter notícias: {e}",
+            "sentiment": "Neutral",
+            "theme": "Erro",
+            "source": "Sistema",
+            "url": "",
+            "publishedAt": "",
+        }]
+
+
+def summarize_market_context(news_list):
+    if not news_list:
+        return {
+            "sentiment": "Neutral",
+            "themes": "Sem dados",
+            "comment": "Sem notícias disponíveis."
+        }
+
+    bearish = sum(1 for n in news_list if n["sentiment"] == "Bearish")
+    bullish = sum(1 for n in news_list if n["sentiment"] == "Bullish")
+
+    if bearish > bullish:
+        sentiment = "Bearish"
+    elif bullish > bearish:
+        sentiment = "Bullish"
+    else:
+        sentiment = "Neutral"
+
+    themes = sorted(set(n["theme"] for n in news_list if n.get("theme")))
+    themes_text = ", ".join(themes) if themes else "Sem temas"
+
+    if sentiment == "Bearish":
+        comment = "Fluxo noticioso com viés negativo para este ativo."
+    elif sentiment == "Bullish":
+        comment = "Fluxo noticioso com viés positivo para este ativo."
+    else:
+        comment = "Fluxo noticioso misto, sem direção clara."
+
+    return {
+        "sentiment": sentiment,
+        "themes": themes_text,
+        "comment": comment
+    }
+
+
+def render_news_section(selected_labels):
+    st.subheader("Contexto de Mercado (News)")
+
+    for label in selected_labels:
+        news = fetch_news_for_label(label)
+        context = summarize_market_context(news)
+
+        st.markdown(f"### {label}")
+
+        c1, c2 = st.columns(2)
+        c1.metric("Sentimento", context["sentiment"])
+        c2.metric("Temas", context["themes"])
+
+        st.markdown(f"**Leitura:** {context['comment']}")
+
+        with st.expander(f"Ver notícias de {label}"):
+            if not news:
+                st.write("Sem notícias.")
+            else:
+                for n in news:
+                    title = n.get("title", "Sem título")
+                    source = n.get("source", "")
+                    published = n.get("publishedAt", "")
+                    url = n.get("url", "")
+                    sentiment = n.get("sentiment", "Neutral")
+
+                    meta = " | ".join(x for x in [source, published, sentiment] if x)
+
+                    if url:
+                        st.markdown(f"- [{title}]({url})")
+                    else:
+                        st.markdown(f"- {title}")
+
+                    if meta:
+                        st.caption(meta)
+
+
 st.sidebar.header("Configuração")
 
 selected = st.sidebar.multiselect(
@@ -321,6 +557,8 @@ if not selected:
     st.warning("Escolhe pelo menos um ativo.")
     st.stop()
 
+render_news_section(selected)
+
 data_map = {}
 summary_rows = []
 
@@ -338,7 +576,6 @@ for label in selected:
         df = add_indicators(df, emas)
 
         data_map[label] = df
-
         sig = compute_signals(df)
 
         summary_rows.append(
@@ -370,63 +607,3 @@ for label in selected:
     st.subheader(label)
     fig = build_chart(data_map[label], label, emas)
     st.plotly_chart(fig, use_container_width=True)
-
-# ---------------- NEWS (SIMPLE MOCK + STRUCTURE) ----------------
-# Fase inicial: estrutura pronta para depois ligar API real
-
-def get_mock_news():
-    return [
-        {"title": "Oil prices rising amid supply concerns", "sentiment": "Bearish", "theme": "Energy / Inflation"},
-        {"title": "US yields remain elevated", "sentiment": "Bearish", "theme": "Rates"},
-        {"title": "Tech earnings mixed outlook", "sentiment": "Neutral", "theme": "Earnings"},
-    ]
-
-
-def summarize_market_context(news_list):
-    bearish = sum(1 for n in news_list if n["sentiment"] == "Bearish")
-    bullish = sum(1 for n in news_list if n["sentiment"] == "Bullish")
-
-    if bearish > bullish:
-        sentiment = "Bearish"
-    elif bullish > bearish:
-        sentiment = "Bullish"
-    else:
-        sentiment = "Neutral"
-
-    themes = list(set(n["theme"] for n in news_list))
-
-    comment = ""
-    if sentiment == "Bearish":
-        comment = "Fluxo noticioso com viés negativo para equities."
-    elif sentiment == "Bullish":
-        comment = "Fluxo noticioso com suporte ao risco."
-    else:
-        comment = "Fluxo noticioso misto, sem direção clara."
-
-    return {
-        "sentiment": sentiment,
-        "themes": ", ".join(themes),
-        "comment": comment
-    }
-
-
-def render_news_section():
-    st.subheader("Contexto de Mercado (News)")
-
-    news = get_mock_news()
-    context = summarize_market_context(news)
-
-    c1, c2 = st.columns(2)
-    c1.metric("Sentimento", context["sentiment"])
-    c2.metric("Temas", context["themes"])
-
-    st.markdown(f"**Leitura:** {context['comment']}")
-
-    with st.expander("Ver notícias"):
-        for n in news:
-            st.markdown(f"- {n['title']} ({n['sentiment']})")
-
-
-# ---------------- RENDER NEWS BEFORE DATA ----------------
-render_news_section()
-
