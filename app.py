@@ -14,6 +14,10 @@ st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard - Fase 1 + 2")
 
 
+st.write("Tem key?", "NEWSAPI_KEY" in st.secrets)
+if "NEWSAPI_KEY" in st.secrets:
+    st.write("Primeiros 5 chars:", st.secrets["NEWSAPI_KEY"][:5])
+
 CONFIG_PATH = Path("config.json")
 if not CONFIG_PATH.exists():
     st.error("Falta o ficheiro config.json na mesma pasta do app.py.")
