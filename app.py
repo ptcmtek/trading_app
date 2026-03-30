@@ -28,7 +28,7 @@ EMA_OPTIONS = CONFIG["ema_options"]
 DEFAULT_EMAS = CONFIG["default_emas"]
 
 
-ASSET_NEWS_CONFIG = {
+SPECIAL_NEWS_OVERRIDES = {
     "SPX (^GSPC)": {
         "categories": ["general"],
         "keywords": [
@@ -43,6 +43,19 @@ ASSET_NEWS_CONFIG = {
             "crypto", "bitcoin"
         ],
     },
+    "SPX Futures (ES=F)": {
+        "categories": ["general"],
+        "keywords": [
+            "s&p 500 futures", "es futures", "e-mini", "spx futures",
+            "s&p 500", "sp500", "equity futures", "wall street futures"
+        ],
+        "priority_keywords": [
+            "s&p 500 futures", "es futures", "e-mini"
+        ],
+        "exclude_keywords": [
+            "crypto", "bitcoin"
+        ],
+    },
     "XAD6.DE": {
         "categories": ["general"],
         "keywords": [
@@ -50,46 +63,104 @@ ASSET_NEWS_CONFIG = {
             "frankfurt", "european equities", "euro stocks"
         ],
         "priority_keywords": [
-            "dax", "german stocks", "frankfurt"
+            "dax", "frankfurt", "german stocks"
         ],
         "exclude_keywords": [
             "crypto"
         ],
     },
-    "Gold": {
+    "Gold ETC (4GLD.DE)": {
         "categories": ["forex", "general"],
         "keywords": [
-            "gold", "bullion", "xauusd", "precious metals",
-            "safe haven", "spot gold"
+            "gold", "bullion", "spot gold", "xauusd",
+            "precious metals", "safe haven", "gold etf", "gold etc"
         ],
         "priority_keywords": [
-            "gold", "xauusd", "spot gold", "bullion"
+            "gold", "spot gold", "xauusd", "bullion"
         ],
         "exclude_keywords": [],
     },
-    "Silver": {
+    "Silver ETC (XAD5.DE)": {
         "categories": ["forex", "general"],
         "keywords": [
-            "silver", "xagusd", "bullion", "precious metals",
-            "spot silver"
+            "silver", "spot silver", "xagusd",
+            "precious metals", "silver etf", "silver etc", "bullion"
         ],
         "priority_keywords": [
-            "silver", "xagusd", "spot silver"
+            "silver", "spot silver", "xagusd"
         ],
         "exclude_keywords": [],
     },
-    "Oil": {
-        "categories": ["general", "forex"],
+    "Gold Futures (GC=F)": {
+        "categories": ["forex", "general"],
         "keywords": [
-            "oil", "crude", "brent", "wti", "opec",
-            "barrel", "energy market"
+            "gold futures", "comex gold", "gc=f", "gold",
+            "spot gold", "xauusd", "bullion", "precious metals"
         ],
         "priority_keywords": [
-            "oil", "crude", "brent", "wti"
+            "gold futures", "comex gold", "gold", "xauusd"
         ],
         "exclude_keywords": [],
     },
 }
+
+
+def infer_asset_news_profile(label: str, symbol: str) -> dict:
+    if label in SPECIAL_NEWS_OVERRIDES:
+        return SPECIAL_NEWS_OVERRIDES[label]
+
+    base = label.lower()
+    sym = str(symbol).lower()
+
+    categories = ["general"]
+    keywords = []
+    priority_keywords = []
+    exclude_keywords = ["crypto"]
+
+    clean_label = (
+        label.replace("(", " ")
+        .replace(")", " ")
+        .replace("^", " ")
+        .replace(".", " ")
+        .replace("-", " ")
+        .replace("/", " ")
+    )
+    parts = [p.strip().lower() for p in clean_label.split() if len(p.strip()) > 1]
+
+    keywords.extend(parts[:8])
+    priority_keywords.extend(parts[:4])
+
+    if any(x in sym for x in ["usd", "eur", "gbp", "jpy", "xau", "xag", "gc=f", "si=f", "cl=f"]):
+        categories = ["forex", "general"]
+
+    if any(x in base for x in ["gold", "silver", "bullion", "xau", "xag"]):
+        categories = ["forex", "general"]
+
+    if any(x in base for x in ["oil", "crude", "brent", "wti"]):
+        categories = ["general", "forex"]
+
+    if any(x in base for x in ["bond", "treasury", "gilt", "bund"]):
+        keywords.extend(["bond yields", "rates", "inflation", "central bank"])
+        priority_keywords.extend(["bond yields", "rates"])
+
+    if any(x in base for x in ["world", "msci", "all-world", "acwi"]):
+        keywords.extend(["global equities", "world stocks"])
+        priority_keywords.extend(["global equities"])
+
+    keywords = list(dict.fromkeys([k for k in keywords if k]))
+    priority_keywords = list(dict.fromkeys([k for k in priority_keywords if k]))
+
+    return {
+        "categories": categories,
+        "keywords": keywords,
+        "priority_keywords": priority_keywords,
+        "exclude_keywords": exclude_keywords,
+    }
+
+
+def get_asset_news_config(label: str) -> dict:
+    symbol = SYMBOLS.get(label, "")
+    return infer_asset_news_profile(label, symbol)
 
 
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -445,7 +516,7 @@ def classify_theme_from_text(text: str) -> str:
 
 
 def score_news_relevance(label: str, title: str, summary: str) -> int:
-    cfg = ASSET_NEWS_CONFIG.get(label, {})
+    cfg = get_asset_news_config(label)
     keywords = [k.lower() for k in cfg.get("keywords", [])]
     priority_keywords = [k.lower() for k in cfg.get("priority_keywords", [])]
     exclude_keywords = [k.lower() for k in cfg.get("exclude_keywords", [])]
@@ -540,7 +611,7 @@ def fetch_finnhub_news(category: str, min_date: str) -> list[dict]:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_news_for_label(label: str, page_size: int = 6) -> list[dict]:
-    cfg = ASSET_NEWS_CONFIG.get(label, {"categories": ["general"]})
+    cfg = get_asset_news_config(label)
     categories = cfg.get("categories", ["general"])
 
     from_date = (datetime.now(timezone.utc) - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
