@@ -11,7 +11,7 @@ import yfinance as yf
 
 
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
-st.title("Trading Dashboard - Phase 1 + 2")
+st.title("Trading Dashboard")
 
 
 CONFIG_PATH = Path("config.json")
